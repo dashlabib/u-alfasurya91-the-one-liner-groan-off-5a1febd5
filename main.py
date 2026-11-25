@@ -34,6 +34,10 @@ def validate(text: str) -> list[str]:
         errors.append(f"too long: {len(text)} chars (max {MAX_CHARS})")
     if "\n" in text or "\r" in text:
         errors.append("must be exactly one line (no newline characters)")
+    if text != text.strip():
+        errors.append("must not have leading or trailing whitespace")
+    if text.rstrip() != text:
+        errors.append("must not end with trailing whitespace")
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
         errors.append("contains control characters")
     if "  " in text:
@@ -44,7 +48,19 @@ def validate(text: str) -> list[str]:
 def write_entry(path: Path = OUTPUT_PATH) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     # No trailing newline: exactly one line, exactly the entry text.
-    path.write_bytes(ENTRY.encode("utf-8"))
+    raw = ENTRY.encode("utf-8")
+    path.write_bytes(raw)
+    # Round-trip check: the written file must decode as UTF-8 and
+    # re-encode to exactly the same bytes, with no newline anywhere
+    # (including inside the entry constant itself).
+    round_tripped = path.read_bytes()
+    if round_tripped != raw:
+        raise ValueError("written bytes do not match the entry encoding")
+    decoded = round_tripped.decode("utf-8")  # raises on invalid UTF-8
+    if decoded.encode("utf-8") != round_tripped:
+        raise ValueError("written file does not round-trip UTF-8 exactly")
+    if decoded != ENTRY or "\n" in decoded or "\r" in decoded:
+        raise ValueError("written file content is not exactly the entry")
     return path
 
 
@@ -55,25 +71,26 @@ def self_test() -> int:
         for err in errors:
             print(f"  - {err}")
         return 1
-    # Determinism: two repeat writes must be byte-identical.
+    # Determinism: three repeat writes must be byte-identical.
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        p1 = write_entry(Path(tmp) / "run1" / "entry.txt")
-        p2 = write_entry(Path(tmp) / "run2" / "entry.txt")
-        h1 = hashlib.sha256(p1.read_bytes()).hexdigest()
-        h2 = hashlib.sha256(p2.read_bytes()).hexdigest()
-    if h1 != h2:
+        hashes = []
+        for i in (1, 2, 3):
+            p = write_entry(Path(tmp) / f"run{i}" / "entry.txt")
+            hashes.append(hashlib.sha256(p.read_bytes()).hexdigest())
+    h1 = hashes[0]
+    if len(set(hashes)) != 1:
         print("FAIL: repeat runs differ")
-        print(f"  run1: {h1}")
-        print(f"  run2: {h2}")
+        for i, h in enumerate(hashes, 1):
+            print(f"  run{i}: {h}")
         return 1
     print("PASS")
     print(f"  entry: {ENTRY}")
     print(f"  chars: {len(ENTRY)} (gate: {MIN_CHARS}-{MAX_CHARS})")
     print(f"  lines: 1 (gate: exactly 1)")
     print(f"  sha256: {h1}")
-    print("  determinism: byte-identical across repeat runs")
+    print("  determinism: byte-identical across 3 repeat runs")
     return 0
 
 
